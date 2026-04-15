@@ -66,6 +66,11 @@ return config
 3. Each floating window loads a pane's text with `wrap=true` at the matching width
 4. On yank or quit, temp files are cleaned up and focus returns to the original tab
 
+## Known Limitations
+
+- **Empty lines are dropped**: WezTerm's `get_logical_lines_as_text()` API does not preserve empty lines. This affects all terminal output, not just alternate screen applications like `less` or `man`.
+- **Viewport position is approximate**: For panes with line wrapping, the initial scroll position may differ slightly from the original terminal view due to character width rendering differences between WezTerm and Neovim.
+
 ## License
 
 MIT
