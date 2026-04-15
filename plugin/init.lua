@@ -7,13 +7,30 @@ local act = wezterm.action
 
 local M = {}
 
--- Find this plugin's installation directory
+-- Find this plugin's installation directory (lazy: not available during initial load)
 local plugin_dir
-for _, item in ipairs(wezterm.plugin.list()) do
-  if item.url:match "snatch" then
-    plugin_dir = item.plugin_dir .. "/"
-    break
+local function get_plugin_dir()
+  if plugin_dir then
+    return plugin_dir
   end
+  for _, item in ipairs(wezterm.plugin.list()) do
+    if item.url and item.url:match "snatch" then
+      plugin_dir = item.plugin_dir .. "/"
+      return plugin_dir
+    end
+  end
+  -- Fallback: try component field (older WezTerm versions use different structure)
+  for _, item in ipairs(wezterm.plugin.list()) do
+    if type(item) == "table" then
+      local url = item[1] or ""
+      local dir = item[2] or ""
+      if url:match "snatch" then
+        plugin_dir = dir .. "/"
+        return plugin_dir
+      end
+    end
+  end
+  return nil
 end
 
 -- Detect platform
@@ -34,7 +51,12 @@ end
 
 -- Ensure the Neovim init.lua is deployed
 local function ensure_nvim_config(appname)
-  local src = plugin_dir .. "nvim/init.lua"
+  local dir = get_plugin_dir()
+  if not dir then
+    wezterm.log_error "snatch.wezterm: cannot find plugin directory"
+    return false
+  end
+  local src = dir .. "nvim/init.lua"
   local dst_dir = nvim_config_home() .. "/" .. appname
   local dst = dst_dir .. "/init.lua"
 
