@@ -8,7 +8,13 @@ local act = wezterm.action
 local M = {}
 
 -- Find this plugin's installation directory
-local plugin_dir = debug.getinfo(1).source:match "@?(.*/)plugin/"
+local plugin_dir
+for _, item in ipairs(wezterm.plugin.list()) do
+  if item.url:match "snatch" then
+    plugin_dir = item.plugin_dir .. "/"
+    break
+  end
+end
 
 -- Detect platform
 local is_macos = wezterm.target_triple:match "darwin"
