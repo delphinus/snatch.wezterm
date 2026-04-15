@@ -27,29 +27,23 @@ local config = wezterm.config_builder()
 
 local snatch = wezterm.plugin.require "https://github.com/delphinus/snatch.wezterm"
 
--- Option A: Let the plugin add the keybinding
-snatch.apply_to_config(config, {
-  key = "[",
-  mods = "CMD",
-})
-
--- Option B: Add the keybinding yourself
-snatch.apply_to_config(config)
-table.insert(config.keys, {
-  key = "[",
-  mods = "CMD",
-  action = snatch.action(),
-})
+config.keys = {
+  {
+    key = "[",
+    mods = "CMD",
+    action = snatch.action(),
+  },
+}
 
 return config
 ```
 
 ## Options
 
+`snatch.action(opts)` accepts an optional table:
+
 | Option | Default | Description |
 |--------|---------|-------------|
-| `key` | `nil` | Key for the keybinding. If `nil`, no keybinding is added |
-| `mods` | `nil` | Modifier keys (e.g., `"CMD"`, `"CTRL\|SHIFT"`) |
 | `nvim_appname` | `"snatch.wezterm"` | `NVIM_APPNAME` for the Neovim instance |
 | `labels` | `"HJKLASDFGYUIOPQWERTNMZXCVB"` | Characters used for flash.nvim jump labels |
 | `shell` | `/bin/zsh` (macOS) or `$SHELL` | Shell to spawn Neovim in |

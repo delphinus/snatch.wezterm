@@ -205,19 +205,4 @@ function M.action(opts)
   end)
 end
 
--- Apply plugin to config
-function M.apply_to_config(config, opts)
-  opts = opts or {}
-
-  -- If key is specified, add keybinding
-  if opts.key then
-    config.keys = config.keys or {}
-    table.insert(config.keys, {
-      key = opts.key,
-      mods = opts.mods,
-      action = M.action(opts),
-    })
-  end
-end
-
 return M
