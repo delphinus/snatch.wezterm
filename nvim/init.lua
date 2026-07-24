@@ -25,21 +25,11 @@ require("lazy").setup({
     version = "*",
   },
   {
-    "folke/flash.nvim",
-    opts = {
-      labels = labels,
-      search = {
-        mode = function(str)
-          if str == "" then
-            return str
-          elseif #str < 2 then
-            return [[\c]] .. str .. [[\|\%#.]]
-          end
-          local migemo = require "luamigemo"
-          return [[\c]] .. migemo.query(str, migemo.RXOP_VIM)
-        end,
-      },
-    },
+    -- flash.nvim からの移行。jab は migemo (luamigemo) を直接使うので mode
+    -- 関数は不要。ただし jab は単一ウィンドウのみが対象で、複数ペインを
+    -- またぐジャンプ (flash の multi-window) はできない点に注意。
+    "atusy/jab.nvim",
+    lazy = false,
   },
 }, {
   change_detection = { enabled = false },
@@ -127,10 +117,13 @@ vim.api.nvim_create_autocmd("VimEnter", {
   end,
 })
 
--- Flash
+-- jab: s でウィンドウ内をインクリメンタル検索してジャンプ (migemo 対応)。
+-- jab_win は式を返すので expr マッピングにする。
 vim.keymap.set({ "n", "x" }, "s", function()
-  require("flash").jump()
-end, { desc = "Flash (migemo)" })
+  return require("jab").jab_win {
+    labels = vim.split(labels, ""),
+  }
+end, { expr = true, desc = "jab (migemo)" })
 
 -- Quit
 vim.keymap.set("n", "q", "<Cmd>qa!<CR>")
