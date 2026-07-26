@@ -7,7 +7,7 @@ A [WezTerm](https://wezterm.org/) plugin inspired by [tmux-fuzzy-motion](https:/
 
 - Capture all panes in the current tab with their scrollback
 - Reproduce pane layout using floating windows
-- Navigate with [flash.nvim](https://github.com/folke/flash.nvim) + [luamigemo](https://github.com/delphinus/luamigemo) for fuzzy-motion (including Japanese)
+- Navigate with [jab.nvim](https://github.com/atusy/jab.nvim) + [luamigemo](https://github.com/delphinus/luamigemo) for fuzzy-motion (including Japanese), labelling every pane at once
 - Yank text to clipboard and auto-return to the original tab
 - Handles zoomed panes
 
@@ -45,7 +45,7 @@ return config
 | Option | Default | Description |
 |--------|---------|-------------|
 | `nvim_appname` | `"snatch.wezterm"` | `NVIM_APPNAME` for the Neovim instance |
-| `labels` | `"HJKLASDFGYUIOPQWERTNMZXCVB"` | Characters used for flash.nvim jump labels |
+| `labels` | `"HJKLASDFGYUIOPQWERTNMZXCVB"` | Characters used for jab.nvim jump labels |
 | `shell` | `/bin/zsh` (macOS) or `$SHELL` | Shell to spawn Neovim in |
 
 ## Usage
@@ -53,7 +53,7 @@ return config
 1. Press the configured key (e.g., `Cmd+[`) in any WezTerm tab
 2. A new tab opens with Neovim showing all panes' content
 3. Navigate:
-   - `s` to fuzzy-jump with flash.nvim (supports Japanese via migemo)
+   - `s` to fuzzy-jump across panes with jab.nvim (supports Japanese via migemo)
    - Standard Vim motions (`/`, `?`, `hjkl`, etc.)
    - `v`/`V`/`Ctrl-V` for visual selection
 4. `y` to yank — copies to clipboard and auto-closes

@@ -26,9 +26,13 @@ require("lazy").setup({
   },
   {
     -- flash.nvim からの移行。jab は migemo (luamigemo) を直接使うので mode
-    -- 関数は不要。ただし jab は単一ウィンドウのみが対象で、複数ペインを
-    -- またぐジャンプ (flash の multi-window) はできない点に注意。
-    "atusy/jab.nvim",
+    -- 関数は不要。multi_window 対応 (タブ内の全ペインにラベルを付けて
+    -- またいでジャンプ) の PR が atusy/jab.nvim へマージされるまでは、その
+    -- 対応を入れた自分の fork のブランチを使う。マージ後は "atusy/jab.nvim"
+    -- (branch 無し) に戻す。snatch のペインは focusable なフロートなので、
+    -- jab は multi_window でそれらすべてにラベルを付けられる。
+    "delphinus/jab.nvim",
+    branch = "feat/multi-window",
     lazy = false,
   },
 }, {
@@ -117,13 +121,15 @@ vim.api.nvim_create_autocmd("VimEnter", {
   end,
 })
 
--- jab: s でウィンドウ内をインクリメンタル検索してジャンプ (migemo 対応)。
+-- jab: s でインクリメンタル検索してジャンプ (migemo 対応)。multi_window で
+-- タブ内の全ペイン (focusable なフロート) にラベルを付けてまたいで飛べる。
 -- jab_win は式を返すので expr マッピングにする。
 vim.keymap.set({ "n", "x" }, "s", function()
   return require("jab").jab_win {
     labels = vim.split(labels, ""),
+    multi_window = true,
   }
-end, { expr = true, desc = "jab (migemo)" })
+end, { expr = true, desc = "jab (migemo, multi-window)" })
 
 -- Quit
 vim.keymap.set("n", "q", "<Cmd>qa!<CR>")
