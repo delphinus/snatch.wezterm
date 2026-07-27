@@ -59,6 +59,15 @@ return config
 4. `y` to yank — copies to clipboard and auto-closes
 5. `q` to quit without copying
 
+## Updating
+
+After `wezterm.plugin.update_all()`, the plugin redeploys its `init.lua` on the
+next config reload. If that file changed, the following launch runs
+`Lazy! sync` once before opening the capture, so Neovim plugins follow the new
+specs. This matters because lazy.nvim only auto-installs plugins that are
+*missing*: when a spec moves to a different repository or branch, the existing
+clone is kept as is, and the mismatch is otherwise silent.
+
 ## How It Works
 
 1. **WezTerm** captures each pane's text (including scrollback) and writes a layout JSON

@@ -49,6 +49,19 @@ local function nvim_config_home()
   return wezterm.home_dir .. "/.config"
 end
 
+-- Marker telling the next Neovim launch to sync its plugins.
+--
+-- The deployed init.lua pins the plugin specs (repo, branch) lazy.nvim installs.
+-- When an update changes those specs, lazy.nvim keeps using the already cloned
+-- directory: it only auto-installs plugins that are missing, and this config
+-- disables `checker`/`change_detection`. The old clone then silently lacks the
+-- features the new init.lua expects. Dropping a marker whenever init.lua
+-- actually changes lets the next launch run `Lazy! sync` once, which re-clones
+-- plugins whose origin moved.
+local function sync_marker_path(appname)
+  return nvim_config_home() .. "/" .. appname .. "/.snatch-sync-needed"
+end
+
 -- Ensure the Neovim init.lua is deployed
 local function ensure_nvim_config(appname)
   local dir = get_plugin_dir()
@@ -88,6 +101,16 @@ local function ensure_nvim_config(appname)
   end
   wf:write(src_content)
   wf:close()
+
+  -- The specs may have moved; ask the next launch to sync.
+  local mf = io.open(sync_marker_path(appname), "w")
+  if mf then
+    mf:write ""
+    mf:close()
+  else
+    wezterm.log_error("snatch.wezterm: cannot write " .. sync_marker_path(appname))
+  end
+
   wezterm.log_info("snatch.wezterm: deployed nvim config to " .. dst)
   return true
 end
@@ -100,17 +123,24 @@ local function default_shell()
   return os.getenv "SHELL" or "/bin/sh"
 end
 
--- Shell command to run nvim and return to original tab
+-- Shell command to run nvim and return to original tab.
+-- Runs `Lazy! sync` first when ensure_nvim_config() left a marker, and only
+-- removes the marker on success so a failed sync is retried next time.
 local function build_shell_cmd(shell, layout_file, appname, labels, caller_tab_idx)
+  local marker = sync_marker_path(appname)
   if shell:match "fish$" then
     return {
       shell, "-c", ([=[
         set -x NVIM_APPNAME %s
         set -x SNATCH_LAYOUT %s
         set -x SNATCH_LABELS '%s'
+        if test -f '%s'
+          echo 'snatch.wezterm: config updated, syncing Neovim plugins...'
+          nvim --headless '+Lazy! sync' +qa; and rm -f '%s'
+        end
         nvim
         wezterm cli activate-tab --tab-index %d
-      ]=]):format(appname, layout_file, labels, caller_tab_idx),
+      ]=]):format(appname, layout_file, labels, marker, marker, caller_tab_idx),
     }
   end
   -- POSIX shell (bash, zsh, sh)
@@ -119,9 +149,13 @@ local function build_shell_cmd(shell, layout_file, appname, labels, caller_tab_i
       export NVIM_APPNAME='%s'
       export SNATCH_LAYOUT='%s'
       export SNATCH_LABELS='%s'
+      if [ -f '%s' ]; then
+        echo 'snatch.wezterm: config updated, syncing Neovim plugins...'
+        nvim --headless '+Lazy! sync' +qa && rm -f '%s'
+      fi
       nvim
       wezterm cli activate-tab --tab-index %d
-    ]=]):format(appname, layout_file, labels, caller_tab_idx),
+    ]=]):format(appname, layout_file, labels, marker, marker, caller_tab_idx),
   }
 end
 
