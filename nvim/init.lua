@@ -56,6 +56,10 @@ vim.opt.swapfile = false
 vim.opt.ignorecase = true
 vim.opt.smartcase = true
 vim.opt.clipboard = "unnamedplus"
+-- The capture holds one buffer line per terminal row, so 'zb' must be able to
+-- put the last line flush against the bottom of the window.
+vim.opt.scrolloff = 0
+vim.opt.sidescrolloff = 0
 
 -- Read layout file
 local layout_file = vim.env.SNATCH_LAYOUT
@@ -102,7 +106,9 @@ vim.api.nvim_create_autocmd("VimEnter", {
           focusable = true,
         })
 
-        vim.wo[win].wrap = true
+        -- The capture is physical (already wrapped) lines, so re-wrapping here
+        -- would double up. 'nowrap' keeps the buffer a 1:1 copy of the grid.
+        vim.wo[win].wrap = false
         vim.wo[win].cursorline = true
 
         vim.api.nvim_set_current_win(win)

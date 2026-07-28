@@ -13,7 +13,7 @@ A [WezTerm](https://wezterm.org/) plugin inspired by [tmux-fuzzy-motion](https:/
 
 ## Requirements
 
-- [WezTerm](https://wezterm.org/) 20230320 or later (plugin support)
+- [WezTerm](https://wezterm.org/) 20240127-113634 or later (for `pane:get_lines_as_escapes()`)
 - [Neovim](https://neovim.io/) 0.10 or later
 - Git (for lazy.nvim bootstrap on first use)
 
@@ -70,15 +70,21 @@ clone is kept as is, and the mismatch is otherwise silent.
 
 ## How It Works
 
-1. **WezTerm** captures each pane's text (including scrollback) and writes a layout JSON
+1. **WezTerm** captures each pane with `pane:get_lines_as_escapes()` (including scrollback), strips the escape sequences, and writes a layout JSON
 2. **Neovim** reads the layout, creates floating windows matching the original pane positions
-3. Each floating window loads a pane's text with `wrap=true` at the matching width
+3. Each floating window loads a pane's text with `wrap=false` at the matching width, so one buffer line is one terminal row
 4. On yank or quit, temp files are cleaned up and focus returns to the original tab
+
+### Why `get_lines_as_escapes()`
+
+The obvious APIs, `pane:get_lines_as_text()` and `pane:get_logical_lines_as_text()`, both **drop empty lines**. They accumulate every line into one buffer and call `trim_end()` on the whole buffer after each line; `"\n"` is whitespace, so a line that contributes no characters also eats the newline written before it. Runs of blank lines vanish entirely. This is a WezTerm bug rather than a terminal limitation — it hits all output, not just alternate screen applications like `less` or `man`.
+
+`get_lines_as_escapes()` goes through `lines_to_escapes()`, which writes `"\r\n"` after every line unconditionally, so the grid survives intact. We strip the SGR/EL/charset sequences back out and get exactly what is on screen. `wezterm cli get-text` is unaffected for the same reason, if you ever need to cross-check by hand.
 
 ## Known Limitations
 
-- **Empty lines are dropped**: WezTerm's `get_logical_lines_as_text()` API does not preserve empty lines. This affects all terminal output, not just alternate screen applications like `less` or `man`.
-- **Viewport position is approximate**: For panes with line wrapping, the initial scroll position may differ slightly from the original terminal view due to character width rendering differences between WezTerm and Neovim.
+- **Wrapped lines yank as separate lines**: the capture is physical (already wrapped) rows, so a long line that WezTerm wrapped across two rows is two lines in the buffer. This is what makes the screen reproduction exact; the cost is that yanking such a line gives you the break too.
+- **Colors are discarded**: `get_lines_as_escapes()` returns styling, but the escapes are stripped before the text reaches Neovim.
 
 ## License
 

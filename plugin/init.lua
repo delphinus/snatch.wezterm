@@ -115,6 +115,35 @@ local function ensure_nvim_config(appname)
   return true
 end
 
+-- Remove the escape sequences emitted by pane:get_lines_as_escapes().
+--
+-- We capture with the escapes variant rather than get_lines_as_text() because
+-- the latter drops empty lines: it trims trailing whitespace off the whole
+-- accumulated buffer after every line, and since "\n" is whitespace, a line
+-- that contributes no characters also eats the newline before it. (Same bug in
+-- get_logical_lines_as_text().) lines_to_escapes() writes "\r\n" per line
+-- unconditionally, so the grid survives intact.
+--
+-- Lua patterns have no alternation, so run one gsub per sequence shape. Order
+-- matters: OSC before CSI before the generic ESC form, or the generic form
+-- would swallow the introducer of the longer ones.
+local function strip_escapes(s)
+  s = s:gsub("\27%][^\7\27]*\7", "") -- OSC ... BEL (hyperlinks)
+  s = s:gsub("\27%][^\27]*\27\\", "") -- OSC ... ST
+  s = s:gsub("\27%[[0-9;:?<=>]*[ -/]*[@-~]", "") -- CSI (SGR, EL, ...)
+  s = s:gsub("\27[ -/]*[0-~]", "") -- ESC intermediates final (e.g. ESC ( B)
+  return s
+end
+
+-- Capture a pane as plain text, one line per terminal row.
+local function capture_pane(pane)
+  local dims = pane:get_dimensions()
+  -- scrollback_rows already counts the viewport rows, so it is the full
+  -- history on its own.
+  local text = strip_escapes(pane:get_lines_as_escapes(dims.scrollback_rows))
+  return (text:gsub("\r\n", "\n"):gsub("\r", "\n"))
+end
+
 -- Default shell for spawning
 local function default_shell()
   if is_macos then
@@ -184,14 +213,7 @@ function M.action(opts)
     local layout = { panes = {} }
     for _, info in ipairs(panes_info) do
       local p = info.pane
-      local dims = p:get_dimensions()
-      local total_rows = dims.scrollback_rows + dims.viewport_rows
-      local text = p:get_logical_lines_as_text(total_rows)
-
-      -- get_logical_lines_as_text() prepends a newline; strip it
-      if text:sub(1, 1) == "\n" then
-        text = text:sub(2)
-      end
+      local text = capture_pane(p)
 
       local tmpfile = "/tmp/snatch-" .. timestamp .. "-" .. tostring(p:pane_id())
       local f = io.open(tmpfile, "w")
