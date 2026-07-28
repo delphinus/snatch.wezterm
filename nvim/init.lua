@@ -123,6 +123,18 @@ vim.api.nvim_create_autocmd("VimEnter", {
       if active_win then
         vim.api.nvim_set_current_win(active_win)
       end
+
+      -- Fidelity harness: grab the reproduced screen so it can be compared
+      -- against the "before" image the WezTerm plugin took. The delay lets
+      -- WezTerm paint the new tab before screencapture reads the framebuffer.
+      local shot_prefix = vim.env.SNATCH_SCREENSHOT
+      local fidelity = vim.env.SNATCH_FIDELITY
+      if shot_prefix and fidelity then
+        vim.defer_fn(function()
+          vim.cmd "redraw"
+          vim.system({ fidelity, "capture", shot_prefix .. "-after.png" }):wait()
+        end, 500)
+      end
     end)
   end,
 })

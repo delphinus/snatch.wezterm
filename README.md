@@ -47,6 +47,7 @@ return config
 | `nvim_appname` | `"snatch.wezterm"` | `NVIM_APPNAME` for the Neovim instance |
 | `labels` | `"HJKLASDFGYUIOPQWERTNMZXCVB"` | Characters used for jab.nvim jump labels |
 | `shell` | `/bin/zsh` (macOS) or `$SHELL` | Shell to spawn Neovim in |
+| `screenshot` | `false` | Capture before/after screenshots for [fidelity checking](#fidelity-testing) (macOS only) |
 
 ## Usage
 
@@ -80,6 +81,20 @@ clone is kept as is, and the mismatch is otherwise silent.
 The obvious APIs, `pane:get_lines_as_text()` and `pane:get_logical_lines_as_text()`, both **drop empty lines**. They accumulate every line into one buffer and call `trim_end()` on the whole buffer after each line; `"\n"` is whitespace, so a line that contributes no characters also eats the newline written before it. Runs of blank lines vanish entirely. This is a WezTerm bug rather than a terminal limitation — it hits all output, not just alternate screen applications like `less` or `man`.
 
 `get_lines_as_escapes()` goes through `lines_to_escapes()`, which writes `"\r\n"` after every line unconditionally, so the grid survives intact. We strip the SGR/EL/charset sequences back out and get exactly what is on screen. `wezterm cli get-text` is unaffected for the same reason, if you ever need to cross-check by hand.
+
+## Fidelity Testing
+
+To check the reproduction against the real thing, turn on screenshots:
+
+```lua
+action = snatch.action { screenshot = true }
+```
+
+WezTerm then grabs the window when the key is pressed, Neovim grabs it again once the floating windows are laid out, and `scripts/fidelity.sh` stacks the two into `/tmp/snatch-<timestamp>-compare.png` and opens it. A row or column shift shows up as a misalignment across the magenta rule.
+
+macOS only. It uses `screencapture(1)`, so the first run asks for Screen Recording permission; it also reads the window bounds through System Events, which needs Accessibility permission. Without the latter it falls back to capturing the whole primary display. ImageMagick is optional — without it the two images are left for you to compare by hand.
+
+Note that the reproduction runs in a **new tab**, so if you hide the tab bar for single-tab windows the two shots will be one row out of step. That is the harness, not the capture.
 
 ## Known Limitations
 

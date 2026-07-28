@@ -144,6 +144,22 @@ local function capture_pane(pane)
   return (text:gsub("\r\n", "\n"):gsub("\r", "\n"))
 end
 
+-- Screenshot the WezTerm window (macOS only) for the fidelity harness.
+local function take_screenshot(path)
+  if not is_macos then
+    wezterm.log_warn "snatch.wezterm: screenshots are only supported on macOS"
+    return
+  end
+  local dir = get_plugin_dir()
+  if not dir then
+    return
+  end
+  local ok, _, stderr = wezterm.run_child_process { dir .. "scripts/fidelity.sh", "capture", path }
+  if not ok then
+    wezterm.log_error("snatch.wezterm: screenshot failed: " .. (stderr or ""))
+  end
+end
+
 -- Default shell for spawning
 local function default_shell()
   if is_macos then
@@ -152,39 +168,61 @@ local function default_shell()
   return os.getenv "SHELL" or "/bin/sh"
 end
 
+-- Environment passed to the spawned Neovim, in a fixed order.
+local ENV_KEYS = { "NVIM_APPNAME", "SNATCH_LAYOUT", "SNATCH_LABELS", "SNATCH_SCREENSHOT", "SNATCH_FIDELITY" }
+
 -- Shell command to run nvim and return to original tab.
 -- Runs `Lazy! sync` first when ensure_nvim_config() left a marker, and only
 -- removes the marker on success so a failed sync is retried next time.
-local function build_shell_cmd(shell, layout_file, appname, labels, caller_tab_idx)
-  local marker = sync_marker_path(appname)
-  if shell:match "fish$" then
+-- In screenshot mode it also builds the before/after comparison once nvim exits.
+local function build_shell_cmd(shell, env, caller_tab_idx)
+  local marker = sync_marker_path(env.NVIM_APPNAME)
+  local is_fish = shell:match "fish$" ~= nil
+
+  -- `indent` keeps the generated script readable: the template already indents
+  -- the first line, so only the continuations need padding.
+  local function join_exports(indent)
+    local lines = {}
+    for _, key in ipairs(ENV_KEYS) do
+      local value = env[key]
+      if value then
+        local fmt = is_fish and "set -x %s '%s'" or "export %s='%s'"
+        table.insert(lines, fmt:format(key, value))
+      end
+    end
+    return table.concat(lines, "\n" .. indent)
+  end
+
+  if is_fish then
     return {
       shell, "-c", ([=[
-        set -x NVIM_APPNAME %s
-        set -x SNATCH_LAYOUT %s
-        set -x SNATCH_LABELS '%s'
+        %s
         if test -f '%s'
           echo 'snatch.wezterm: config updated, syncing Neovim plugins...'
           nvim --headless '+Lazy! sync' +qa; and rm -f '%s'
         end
         nvim
+        if set -q SNATCH_SCREENSHOT
+          "$SNATCH_FIDELITY" compare "$SNATCH_SCREENSHOT"
+        end
         wezterm cli activate-tab --tab-index %d
-      ]=]):format(appname, layout_file, labels, marker, marker, caller_tab_idx),
+      ]=]):format(join_exports "        ", marker, marker, caller_tab_idx),
     }
   end
   -- POSIX shell (bash, zsh, sh)
   return {
     shell, "-c", ([=[
-      export NVIM_APPNAME='%s'
-      export SNATCH_LAYOUT='%s'
-      export SNATCH_LABELS='%s'
+      %s
       if [ -f '%s' ]; then
         echo 'snatch.wezterm: config updated, syncing Neovim plugins...'
         nvim --headless '+Lazy! sync' +qa && rm -f '%s'
       fi
       nvim
+      if [ -n "${SNATCH_SCREENSHOT:-}" ]; then
+        "$SNATCH_FIDELITY" compare "$SNATCH_SCREENSHOT"
+      fi
       wezterm cli activate-tab --tab-index %d
-    ]=]):format(appname, layout_file, labels, marker, marker, caller_tab_idx),
+    ]=]):format(join_exports "      ", marker, marker, caller_tab_idx),
   }
 end
 
@@ -201,6 +239,13 @@ function M.action(opts)
     local tab = pane:tab()
     local panes_info = tab:panes_with_info()
     local timestamp = tostring(os.time())
+    local shot_prefix = opts.screenshot and ("/tmp/snatch-" .. timestamp) or nil
+
+    -- Grab the "before" image first so it shows the screen as it looked when
+    -- the key was pressed, not after the captures below.
+    if shot_prefix then
+      take_screenshot(shot_prefix .. "-before.png")
+    end
 
     -- If a pane is zoomed, capture only that pane
     for _, info in ipairs(panes_info) do
@@ -251,10 +296,23 @@ function M.action(opts)
       end
     end
 
+    local env = {
+      NVIM_APPNAME = appname,
+      SNATCH_LAYOUT = layout_file,
+      SNATCH_LABELS = labels,
+    }
+    if shot_prefix then
+      local dir = get_plugin_dir()
+      if dir then
+        env.SNATCH_SCREENSHOT = shot_prefix
+        env.SNATCH_FIDELITY = dir .. "scripts/fidelity.sh"
+      end
+    end
+
     window:perform_action(
       act.SpawnCommandInNewTab {
         domain = "CurrentPaneDomain",
-        args = build_shell_cmd(shell, layout_file, appname, labels, caller_tab_idx),
+        args = build_shell_cmd(shell, env, caller_tab_idx),
       },
       pane
     )
