@@ -220,6 +220,130 @@ local function take_screenshot(path)
   end
 end
 
+-- Tell the user this is a capture, not the live terminal.
+--
+-- The reproduction is faithful enough to be mistaken for the real thing, so it
+-- needs a signal, and every cell of the grid is already spoken for. Everything
+-- here lives outside the grid: the tab title, the tab bar, and a border drawn
+-- in the window's own padding.
+local DEFAULT_TAB_TITLE = "◆ SNATCH"
+local DEFAULT_TINT = "#f7768e"
+local TINT_FG = "#1a1b26"
+
+-- The border costs pixels, and pixels come out of the grid: shrink it by one
+-- column and every pane in *every* tab of the window reflows, including the
+-- ones we just captured. So the padding gives back exactly what the border
+-- takes.
+--
+-- Both are expressed as the same fraction of a cell, against a default padding
+-- of 1cell horizontally and 0.5cell vertically. Since floor(f*c) + floor(f*c)
+-- is never greater than floor(2f*c), the pair can only consume less than the
+-- padding it replaces, never more -- and being a pixel or two under cannot
+-- change the grid, because gaining a cell would take a whole cell of slack.
+-- At a 16x32px cell this comes to an 8px border on every side.
+local BORDER = { h = "0.5cell", v = "0.25cell" }
+local PADDING = { h = "0.5cell", v = "0.25cell" }
+
+local indicator = { tab_title = DEFAULT_TAB_TITLE, tint = DEFAULT_TINT, registered = false }
+local tint_state = {} -- window id -> { frame, padding, at }
+
+local function tinted_frame(window, tint)
+  local out = {}
+  local ok, config = pcall(function()
+    return window:effective_config()
+  end)
+  if ok and type(config) == "table" and type(config.window_frame) == "table" then
+    -- Keep whatever the user configured -- the tab bar font, in particular --
+    -- and drop the dimensions, which we are about to set ourselves.
+    for key, value in pairs(config.window_frame) do
+      if not key:match "^border_" then
+        out[key] = value
+      end
+    end
+  end
+  out.active_titlebar_bg = tint
+  out.inactive_titlebar_bg = tint
+  out.active_titlebar_fg = TINT_FG
+  out.inactive_titlebar_fg = TINT_FG
+  out.border_left_width = BORDER.h
+  out.border_right_width = BORDER.h
+  out.border_top_height = BORDER.v
+  out.border_bottom_height = BORDER.v
+  out.border_left_color = tint
+  out.border_right_color = tint
+  out.border_top_color = tint
+  out.border_bottom_color = tint
+  return out
+end
+
+local function set_tint(window, on)
+  local id = window:window_id()
+  local state = tint_state[id]
+  if (state ~= nil) == on then
+    return
+  end
+
+  local overrides = window:get_config_overrides() or {}
+  if on then
+    tint_state[id] = {
+      frame = overrides.window_frame,
+      padding = overrides.window_padding,
+      at = os.time(),
+    }
+    overrides.window_frame = tinted_frame(window, indicator.tint)
+    overrides.window_padding =
+      { left = PADDING.h, right = PADDING.h, top = PADDING.v, bottom = PADDING.v }
+  else
+    -- The tab title is set by the spawned shell a moment after the tab opens.
+    -- Do not undo ourselves in that gap.
+    if os.time() - state.at < 2 then
+      return
+    end
+    overrides.window_frame = state.frame
+    overrides.window_padding = state.padding
+    tint_state[id] = nil
+  end
+
+  local ok, err = pcall(function()
+    window:set_config_overrides(overrides)
+  end)
+  if not ok and on then
+    -- effective_config() hands back structured values that may not round-trip.
+    -- Colours alone still work; the tab bar font reverts for the duration.
+    wezterm.log_warn("snatch.wezterm: frame tint fell back to colours only: " .. tostring(err))
+    overrides.window_padding = state and state.padding or nil
+    overrides.window_frame = {
+      active_titlebar_bg = indicator.tint,
+      inactive_titlebar_bg = indicator.tint,
+      active_titlebar_fg = TINT_FG,
+      inactive_titlebar_fg = TINT_FG,
+    }
+    pcall(function()
+      window:set_config_overrides(overrides)
+    end)
+  end
+end
+
+-- Drive the tint off the tab title rather than off entering and leaving, so it
+-- follows the tab: it lights up whenever the capture tab is in front and clears
+-- itself whether the user quits with `q` or just closes the tab.
+local function register_indicator()
+  if indicator.registered then
+    return
+  end
+  indicator.registered = true
+  wezterm.on("update-status", function(window, _pane)
+    if not (indicator.tint and indicator.tab_title) then
+      return
+    end
+    local ok, tab = pcall(function()
+      return window:active_tab()
+    end)
+    local title = (ok and tab) and tab:get_title() or ""
+    set_tint(window, title == indicator.tab_title)
+  end)
+end
+
 -- Default shell for spawning
 local function default_shell()
   if is_macos then
@@ -235,14 +359,18 @@ local ENV_KEYS = { "NVIM_APPNAME", "SNATCH_LAYOUT", "SNATCH_LABELS", "SNATCH_SCR
 -- Runs `Lazy! sync` first when ensure_nvim_config() left a marker, and only
 -- removes the marker on success so a failed sync is retried next time.
 -- In screenshot mode it also builds the before/after comparison once nvim exits.
-local function build_shell_cmd(shell, env, caller_tab_idx)
+local function build_shell_cmd(shell, env, caller_tab_idx, tab_title)
   local marker = sync_marker_path(env.NVIM_APPNAME)
   local is_fish = shell:match "fish$" ~= nil
 
   -- `indent` keeps the generated script readable: the template already indents
   -- the first line, so only the continuations need padding.
-  local function join_exports(indent)
+  local function preamble(indent)
     local lines = {}
+    if tab_title then
+      -- First thing, so the window indicator can key off it almost immediately.
+      table.insert(lines, ("wezterm cli set-tab-title '%s'"):format(tab_title:gsub("'", [['\'']])))
+    end
     for _, key in ipairs(ENV_KEYS) do
       local value = env[key]
       if value then
@@ -266,7 +394,7 @@ local function build_shell_cmd(shell, env, caller_tab_idx)
           "$SNATCH_FIDELITY" compare "$SNATCH_SCREENSHOT"
         end
         wezterm cli activate-tab --tab-index %d
-      ]=]):format(join_exports "        ", marker, marker, caller_tab_idx),
+      ]=]):format(preamble "        ", marker, marker, caller_tab_idx),
     }
   end
   -- POSIX shell (bash, zsh, sh)
@@ -282,7 +410,7 @@ local function build_shell_cmd(shell, env, caller_tab_idx)
         "$SNATCH_FIDELITY" compare "$SNATCH_SCREENSHOT"
       fi
       wezterm cli activate-tab --tab-index %d
-    ]=]):format(join_exports "      ", marker, marker, caller_tab_idx),
+    ]=]):format(preamble "      ", marker, marker, caller_tab_idx),
   }
 end
 
@@ -293,8 +421,18 @@ function M.action(opts)
   local labels = opts.labels or "HJKLASDFGYUIOPQWERTNMZXCVB"
   local shell = opts.shell or default_shell()
   local color = opts.color ~= false
+  local tab_title = opts.tab_title ~= false and (opts.tab_title or DEFAULT_TAB_TITLE) or nil
+  local tint = opts.tint ~= false and (hex_color(opts.tint) or DEFAULT_TINT) or nil
 
   ensure_nvim_config(appname)
+
+  -- The status handler is global, so it takes the settings from the action and
+  -- registers only once however many keys are bound.
+  indicator.tab_title = tab_title
+  indicator.tint = tint
+  if tab_title and tint then
+    register_indicator()
+  end
 
   return wezterm.action_callback(function(window, pane)
     local tab = pane:tab()
@@ -371,10 +509,15 @@ function M.action(opts)
       end
     end
 
+    -- Light up straight away rather than waiting for the next status tick.
+    if tint and tab_title then
+      set_tint(window, true)
+    end
+
     window:perform_action(
       act.SpawnCommandInNewTab {
         domain = "CurrentPaneDomain",
-        args = build_shell_cmd(shell, env, caller_tab_idx),
+        args = build_shell_cmd(shell, env, caller_tab_idx, tab_title),
       },
       pane
     )

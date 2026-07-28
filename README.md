@@ -48,6 +48,8 @@ return config
 | `labels` | `"HJKLASDFGYUIOPQWERTNMZXCVB"` | Characters used for jab.nvim jump labels |
 | `shell` | `/bin/zsh` (macOS) or `$SHELL` | Shell to spawn Neovim in |
 | `color` | `true` | Reproduce the terminal's colours; `false` gives plain text |
+| `tab_title` | `"◆ SNATCH"` | Title for the capture tab; `false` leaves it alone |
+| `tint` | `"#f7768e"` | Colour for the tab bar and window border while the capture tab is in front; `false` disables it |
 | `screenshot` | `false` | Capture before/after screenshots for [fidelity checking](#fidelity-testing) (macOS only) |
 
 ## Usage
@@ -97,6 +99,17 @@ Colours arrive in the ITU-T T.416 **colon** form (`ESC[38:2::R:G:B`). Most ANSI 
 - `Normal` and `NormalFloat` come from WezTerm's `resolved_palette`, so default-coloured cells and the gaps between panes match the real background.
 - Selection is `reverse` and the cursor line is underlined, because Neovim's defaults for both are background-only and disappear under coloured cells.
 - While jab.nvim is searching, colour flattens to the pane background. jab dims the screen with a single foreground-only `Comment` highlight, which would otherwise leave the backgrounds at full strength with grey text on top. Giving `Comment` a background turns it into a real backdrop; colour returns on the jump.
+
+### Telling it apart from the real terminal
+
+The reproduction is faithful enough to be mistaken for the live terminal, and every cell of the grid is already spoken for by the capture. So the indicator lives entirely outside the grid:
+
+- The capture tab is titled `◆ SNATCH`.
+- While that tab is in front, the tab bar and a border on all four sides of the window turn `tint`.
+
+The border would normally cost pixels, and pixels come out of the grid — shrink it by one column and every pane in *every* tab of the window reflows, including the ones just captured. Instead the window padding gives back exactly what the border takes. Both are expressed as the same fraction of a cell against a default padding of `1cell` horizontally and `0.5cell` vertically, and since `floor(f*c) + floor(f*c)` is never greater than `floor(2f*c)`, the pair can only consume less than the padding it replaces, never more. Being a pixel or two under is harmless, because gaining a cell would take a whole cell of slack. At a 16x32px cell this comes to an 8px border.
+
+The tint follows the tab rather than the capture's lifetime, so it clears itself whether you quit with `q` or just close the tab.
 
 ## Fidelity Testing
 
