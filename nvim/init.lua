@@ -1,6 +1,12 @@
 -- snatch.wezterm: Neovim configuration for screen copy mode
 -- This file is auto-deployed by the snatch.wezterm WezTerm plugin.
 -- Do not edit directly; changes will be overwritten on plugin update.
+--
+-- Bump when the lazy.nvim specs below change. The WezTerm plugin compares this
+-- line and only then asks the next launch to run `Lazy! sync`, so edits to the
+-- rest of this file (or to lua/snatch/) do not cost a network round trip before
+-- the capture appears.
+-- spec-version: 1
 
 -- Bootstrap lazy.nvim
 local lazypath = vim.fn.stdpath "data" .. "/lazy/lazy.nvim"
@@ -60,6 +66,9 @@ vim.opt.clipboard = "unnamedplus"
 -- put the last line flush against the bottom of the window.
 vim.opt.scrolloff = 0
 vim.opt.sidescrolloff = 0
+-- Be explicit: if detection ever fails, every truecolor cell quantises to 16
+-- colours and the capture looks broken rather than merely uncoloured.
+vim.opt.termguicolors = true
 
 -- Read layout file
 local layout_file = vim.env.SNATCH_LAYOUT
@@ -73,6 +82,113 @@ if layout_file then
   end
 end
 
+local palette = (layout and layout.palette) or {}
+local use_color = not (layout and layout.color == false)
+
+-- Match WezTerm's own colours.
+--
+-- These have to be settled before any window exists: 'background' selects which
+-- variant of the default scheme the groups below inherit from, and jab.nvim
+-- draws its labels with those groups.
+local function setup_colors()
+  local fg, bg = palette.foreground, palette.background
+  if bg then
+    local r, g, b = tonumber(bg:sub(2, 3), 16), tonumber(bg:sub(4, 5), 16), tonumber(bg:sub(6, 7), 16)
+    vim.o.background = (0.299 * r + 0.587 * g + 0.114 * b) > 127 and "light" or "dark"
+  end
+  if fg or bg then
+    -- Floats read NormalFloat, but jab.nvim pads wide-character labels with a
+    -- chunk highlighted as Normal, so both have to agree.
+    for _, group in ipairs { "Normal", "NormalFloat" } do
+      vim.api.nvim_set_hl(0, group, { fg = fg, bg = bg })
+    end
+  end
+
+  if not use_color then
+    return
+  end
+
+  -- jab.nvim dims the screen during a search with a single foreground-only
+  -- `Comment` extmark. Neovim combines highlights attribute-wise, so a group
+  -- that sets no background lets ours through untouched: the text greys out
+  -- while the cell colours stay at full strength, which is unreadable. Giving
+  -- Comment a background turns it into a real backdrop, so colour flattens
+  -- while searching and comes back on the jump.
+  local comment = vim.api.nvim_get_hl(0, { name = "Comment", link = false })
+  vim.api.nvim_set_hl(0, "Comment", vim.tbl_extend("force", comment, { bg = bg }))
+
+  -- CursorLine is background-only by default, and ":h hl-CursorLine" makes such
+  -- a definition low priority, so it vanishes under any coloured cell. Giving
+  -- it a foreground would win but destroy the text colours on that row, so
+  -- underline it instead.
+  vim.api.nvim_set_hl(0, "CursorLine", { underline = true })
+
+  -- Visual is background-only too, and dark text on its pale grey is illegible.
+  -- Inverting is what a terminal does for a selection and is always readable.
+  -- Unlike an extmark attribute, this is applied above the decorations, so it
+  -- cannot leak into neighbouring highlights.
+  vim.api.nvim_set_hl(0, "Visual", { reverse = true })
+end
+
+-- Load a captured pane into a scratch buffer, colouring it from the escape
+-- sequences WezTerm recorded.
+local ansi = require "snatch.ansi"
+local hl_ns = vim.api.nvim_create_namespace "snatch-color"
+local hl_groups = {}
+
+local function highlight_group(attrs)
+  local key = ansi.key(attrs)
+  local group = hl_groups[key]
+  if not group then
+    group = "SnatchAnsi" .. vim.tbl_count(hl_groups)
+    vim.api.nvim_set_hl(0, group, attrs)
+    hl_groups[key] = group
+  end
+  return group
+end
+
+local function load_pane(path)
+  local f = io.open(path, "rb")
+  if not f then
+    return nil
+  end
+  local raw = f:read "*a"
+  f:close()
+
+  local lines, runs = ansi.parse(raw, palette)
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+
+  if use_color then
+    for lnum, lruns in pairs(runs) do
+      local width = #(lines[lnum] or "")
+      for _, run in ipairs(lruns) do
+        local start_col = math.min(run[1], width)
+        local end_col = math.min(run[2], width)
+        local attrs, url = run[3], run[4]
+        local opts = { priority = 10, url = url }
+        if attrs then
+          opts.hl_group = highlight_group(attrs)
+        end
+        if run.eol then
+          -- Erase-to-end-of-line with a background set: paint the rest of the
+          -- screen line. This is the form the API documents for hl_eol.
+          opts.end_row, opts.end_col, opts.hl_eol = lnum, 0, true
+        else
+          opts.end_col = end_col
+        end
+        if opts.hl_group or url then
+          pcall(vim.api.nvim_buf_set_extmark, buf, hl_ns, lnum - 1, start_col, opts)
+        end
+      end
+    end
+  end
+
+  -- Set after the lines: a nomodifiable buffer rejects them.
+  vim.bo[buf].modifiable = false
+  return buf
+end
+
 -- Create floating windows for each pane
 vim.api.nvim_create_autocmd("VimEnter", {
   once = true,
@@ -82,18 +198,20 @@ vim.api.nvim_create_autocmd("VimEnter", {
         return
       end
 
-      -- Background window: dark empty buffer for gaps between panes
+      setup_colors()
+
+      -- Background window: dark empty buffer for gaps between panes.
+      -- WinSeparator links to Normal, so this follows the WezTerm background.
       local bg_buf = vim.api.nvim_get_current_buf()
       vim.bo[bg_buf].buftype = "nofile"
       vim.wo.winhighlight = "Normal:WinSeparator"
 
       local active_win = nil
       for _, p in ipairs(layout.panes) do
-        local buf = vim.fn.bufadd(p.file)
-        vim.fn.bufload(buf)
-        vim.bo[buf].modifiable = false
-        vim.bo[buf].readonly = true
-        vim.bo[buf].swapfile = false
+        local buf = load_pane(p.file)
+        if not buf then
+          goto continue
+        end
 
         local win = vim.api.nvim_open_win(buf, false, {
           relative = "editor",
@@ -118,6 +236,7 @@ vim.api.nvim_create_autocmd("VimEnter", {
         if p.is_active then
           active_win = win
         end
+        ::continue::
       end
 
       if active_win then
@@ -133,7 +252,7 @@ vim.api.nvim_create_autocmd("VimEnter", {
         vim.defer_fn(function()
           vim.cmd "redraw"
           vim.system({ fidelity, "capture", shot_prefix .. "-after.png" }):wait()
-        end, 500)
+        end, 800)
       end
     end)
   end,

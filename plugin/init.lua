@@ -55,67 +55,91 @@ end
 -- When an update changes those specs, lazy.nvim keeps using the already cloned
 -- directory: it only auto-installs plugins that are missing, and this config
 -- disables `checker`/`change_detection`. The old clone then silently lacks the
--- features the new init.lua expects. Dropping a marker whenever init.lua
--- actually changes lets the next launch run `Lazy! sync` once, which re-clones
--- plugins whose origin moved.
+-- features the new init.lua expects. Dropping a marker when the specs change
+-- lets the next launch run `Lazy! sync` once, which re-clones plugins whose
+-- origin moved.
 local function sync_marker_path(appname)
   return nvim_config_home() .. "/" .. appname .. "/.snatch-sync-needed"
 end
 
--- Ensure the Neovim init.lua is deployed
+-- Files copied into the Neovim config directory, relative to the plugin's nvim/.
+local NVIM_FILES = { "init.lua", "lua/snatch/ansi.lua" }
+
+local function read_file(path, mode)
+  local f = io.open(path, mode or "r")
+  if not f then
+    return nil
+  end
+  local content = f:read "*a"
+  f:close()
+  return content
+end
+
+-- `Lazy! sync` is a network round trip that delays the capture the user asked
+-- for, so it must not be triggered by unrelated edits. Only the lazy.nvim specs
+-- matter, and those live in init.lua behind this marker line; everything else
+-- deployed alongside it (the SGR parser) can change freely.
+local function spec_version(init_lua)
+  return init_lua and init_lua:match "\n?%s*%-%-%s*spec%-version:%s*(%S+)" or nil
+end
+
+-- Ensure the Neovim config is deployed
 local function ensure_nvim_config(appname)
   local dir = get_plugin_dir()
   if not dir then
     wezterm.log_error "snatch.wezterm: cannot find plugin directory"
     return false
   end
-  local src = dir .. "nvim/init.lua"
   local dst_dir = nvim_config_home() .. "/" .. appname
-  local dst = dst_dir .. "/init.lua"
 
-  -- Read source
-  local sf = io.open(src, "r")
-  if not sf then
-    wezterm.log_error("snatch.wezterm: cannot read " .. src)
-    return false
-  end
-  local src_content = sf:read "*a"
-  sf:close()
+  local old_init = read_file(dst_dir .. "/init.lua")
+  local deployed = 0
 
-  -- Check if destination needs updating
-  local df = io.open(dst, "r")
-  if df then
-    local dst_content = df:read "*a"
-    df:close()
-    if dst_content == src_content then
-      return true -- already up to date
+  for _, rel in ipairs(NVIM_FILES) do
+    local src = dir .. "nvim/" .. rel
+    local dst = dst_dir .. "/" .. rel
+
+    local src_content = read_file(src)
+    if not src_content then
+      wezterm.log_error("snatch.wezterm: cannot read " .. src)
+      return false
+    end
+
+    if read_file(dst) ~= src_content then
+      local parent = dst:match "^(.*)/[^/]*$"
+      os.execute('mkdir -p "' .. parent .. '"')
+      local wf = io.open(dst, "w")
+      if not wf then
+        wezterm.log_error("snatch.wezterm: cannot write " .. dst)
+        return false
+      end
+      wf:write(src_content)
+      wf:close()
+      deployed = deployed + 1
     end
   end
 
-  -- Create directory and write
-  os.execute('mkdir -p "' .. dst_dir .. '"')
-  local wf = io.open(dst, "w")
-  if not wf then
-    wezterm.log_error("snatch.wezterm: cannot write " .. dst)
-    return false
-  end
-  wf:write(src_content)
-  wf:close()
-
-  -- The specs may have moved; ask the next launch to sync.
-  local mf = io.open(sync_marker_path(appname), "w")
-  if mf then
-    mf:write ""
-    mf:close()
-  else
-    wezterm.log_error("snatch.wezterm: cannot write " .. sync_marker_path(appname))
+  if deployed == 0 then
+    return true
   end
 
-  wezterm.log_info("snatch.wezterm: deployed nvim config to " .. dst)
+  local new_init = read_file(dst_dir .. "/init.lua")
+  if spec_version(old_init) ~= spec_version(new_init) then
+    local marker = sync_marker_path(appname)
+    local mf = io.open(marker, "w")
+    if mf then
+      mf:write ""
+      mf:close()
+    else
+      wezterm.log_error("snatch.wezterm: cannot write " .. marker)
+    end
+  end
+
+  wezterm.log_info(("snatch.wezterm: deployed %d file(s) to %s"):format(deployed, dst_dir))
   return true
 end
 
--- Remove the escape sequences emitted by pane:get_lines_as_escapes().
+-- Capture a pane, one line per terminal row, with styling intact.
 --
 -- We capture with the escapes variant rather than get_lines_as_text() because
 -- the latter drops empty lines: it trims trailing whitespace off the whole
@@ -124,24 +148,60 @@ end
 -- get_logical_lines_as_text().) lines_to_escapes() writes "\r\n" per line
 -- unconditionally, so the grid survives intact.
 --
--- Lua patterns have no alternation, so run one gsub per sequence shape. Order
--- matters: OSC before CSI before the generic ESC form, or the generic form
--- would swallow the introducer of the longer ones.
-local function strip_escapes(s)
-  s = s:gsub("\27%][^\7\27]*\7", "") -- OSC ... BEL (hyperlinks)
-  s = s:gsub("\27%][^\27]*\27\\", "") -- OSC ... ST
-  s = s:gsub("\27%[[0-9;:?<=>]*[ -/]*[@-~]", "") -- CSI (SGR, EL, ...)
-  s = s:gsub("\27[ -/]*[0-~]", "") -- ESC intermediates final (e.g. ESC ( B)
-  return s
-end
-
--- Capture a pane as plain text, one line per terminal row.
+-- The escapes are left in: the Neovim side parses them into highlights, and
+-- strips them when colour is off. That keeps the temp file a full-fidelity
+-- record of the pane.
 local function capture_pane(pane)
   local dims = pane:get_dimensions()
   -- scrollback_rows already counts the viewport rows, so it is the full
   -- history on its own.
-  local text = strip_escapes(pane:get_lines_as_escapes(dims.scrollback_rows))
-  return (text:gsub("\r\n", "\n"):gsub("\r", "\n"))
+  return pane:get_lines_as_escapes(dims.scrollback_rows)
+end
+
+-- Only "#rrggbb" is safe to hand to nvim_set_hl; anything else throws and would
+-- take the whole capture down with it.
+local function hex_color(value)
+  return type(value) == "string" and value:match "^#%x%x%x%x%x%x$" and value or nil
+end
+
+local function hex_colors(list)
+  if type(list) ~= "table" then
+    return nil
+  end
+  local out = {}
+  for i = 1, 8 do
+    out[i] = hex_color(list[i])
+    if not out[i] then
+      return nil
+    end
+  end
+  return out
+end
+
+-- WezTerm's effective colours, so default-coloured cells and the indexed SGR
+-- parameters resolve to what the terminal actually shows. This is per WezTerm
+-- window, so one palette covers every pane in the tab.
+--
+-- `indexed` is deliberately left out: it is a map keyed 16..255 rather than a
+-- sequence, so it does not survive json_encode cleanly, and WezTerm resolves
+-- everything to truecolor in practice anyway.
+local function window_palette(window)
+  local ok, config = pcall(function()
+    return window:effective_config()
+  end)
+  if not ok or type(config) ~= "table" then
+    return nil
+  end
+  local p = config.resolved_palette
+  if type(p) ~= "table" then
+    return nil
+  end
+  return {
+    foreground = hex_color(p.foreground),
+    background = hex_color(p.background),
+    ansi = hex_colors(p.ansi),
+    brights = hex_colors(p.brights),
+  }
 end
 
 -- Screenshot the WezTerm window (macOS only) for the fidelity harness.
@@ -232,6 +292,7 @@ function M.action(opts)
   local appname = opts.nvim_appname or "snatch.wezterm"
   local labels = opts.labels or "HJKLASDFGYUIOPQWERTNMZXCVB"
   local shell = opts.shell or default_shell()
+  local color = opts.color ~= false
 
   ensure_nvim_config(appname)
 
@@ -255,13 +316,14 @@ function M.action(opts)
       end
     end
 
-    local layout = { panes = {} }
+    local layout = { panes = {}, color = color, palette = window_palette(window) }
     for _, info in ipairs(panes_info) do
       local p = info.pane
       local text = capture_pane(p)
 
       local tmpfile = "/tmp/snatch-" .. timestamp .. "-" .. tostring(p:pane_id())
-      local f = io.open(tmpfile, "w")
+      -- "wb": the payload carries ESC bytes now
+      local f = io.open(tmpfile, "wb")
       if not f then
         wezterm.log_error("snatch.wezterm: failed to create " .. tmpfile)
         return

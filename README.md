@@ -5,7 +5,7 @@ A [WezTerm](https://wezterm.org/) plugin inspired by [tmux-fuzzy-motion](https:/
 
 ## Features
 
-- Capture all panes in the current tab with their scrollback
+- Capture all panes in the current tab with their scrollback, in colour
 - Reproduce pane layout using floating windows
 - Navigate with [jab.nvim](https://github.com/atusy/jab.nvim) + [luamigemo](https://github.com/delphinus/luamigemo) for fuzzy-motion (including Japanese), labelling every pane at once
 - Yank text to clipboard and auto-return to the original tab
@@ -47,6 +47,7 @@ return config
 | `nvim_appname` | `"snatch.wezterm"` | `NVIM_APPNAME` for the Neovim instance |
 | `labels` | `"HJKLASDFGYUIOPQWERTNMZXCVB"` | Characters used for jab.nvim jump labels |
 | `shell` | `/bin/zsh` (macOS) or `$SHELL` | Shell to spawn Neovim in |
+| `color` | `true` | Reproduce the terminal's colours; `false` gives plain text |
 | `screenshot` | `false` | Capture before/after screenshots for [fidelity checking](#fidelity-testing) (macOS only) |
 
 ## Usage
@@ -71,16 +72,31 @@ clone is kept as is, and the mismatch is otherwise silent.
 
 ## How It Works
 
-1. **WezTerm** captures each pane with `pane:get_lines_as_escapes()` (including scrollback), strips the escape sequences, and writes a layout JSON
+1. **WezTerm** captures each pane with `pane:get_lines_as_escapes()` (including scrollback) and writes it verbatim, plus a layout JSON carrying the pane geometry and the window's resolved colour palette
 2. **Neovim** reads the layout, creates floating windows matching the original pane positions
-3. Each floating window loads a pane's text with `wrap=false` at the matching width, so one buffer line is one terminal row
+3. `lua/snatch/ansi.lua` parses the escape sequences into text plus per-row highlight runs; the text goes into a scratch buffer with `wrap=false` at the matching width, so one buffer line is one terminal row, and the runs become extmarks
 4. On yank or quit, temp files are cleaned up and focus returns to the original tab
 
 ### Why `get_lines_as_escapes()`
 
-The obvious APIs, `pane:get_lines_as_text()` and `pane:get_logical_lines_as_text()`, both **drop empty lines**. They accumulate every line into one buffer and call `trim_end()` on the whole buffer after each line; `"\n"` is whitespace, so a line that contributes no characters also eats the newline written before it. Runs of blank lines vanish entirely. This is a WezTerm bug rather than a terminal limitation — it hits all output, not just alternate screen applications like `less` or `man`.
+The obvious APIs, `pane:get_lines_as_text()` and `pane:get_logical_lines_as_text()`, both **drop empty lines**. They accumulate every line into one buffer and call `trim_end()` on the whole buffer after each line; `"\n"` is whitespace, so a line that contributes no characters also eats the newline written before it. Runs of blank lines vanish entirely. This is a WezTerm bug rather than a terminal limitation — it hits all output, not just alternate screen applications like `less` or `man`. ([Fix submitted upstream](https://github.com/wezterm/wezterm/pull/7985); `wezterm cli get-text` was never affected, if you want to cross-check by hand.)
 
-`get_lines_as_escapes()` goes through `lines_to_escapes()`, which writes `"\r\n"` after every line unconditionally, so the grid survives intact. We strip the SGR/EL/charset sequences back out and get exactly what is on screen. `wezterm cli get-text` is unaffected for the same reason, if you ever need to cross-check by hand.
+`get_lines_as_escapes()` goes through `lines_to_escapes()`, which writes `"\r\n"` after every line unconditionally, so the grid survives intact — and it keeps the colours, which is what makes the reproduction match the terminal.
+
+Two details of that output are easy to get wrong, and both shift the whole pane by a row if you do:
+
+- The final `"\r\n"` is a terminator, not a separator, so it must not produce a trailing row.
+- `lines_to_escapes()` appends one attribute reset *after* that last newline, leaving an unterminated fragment that carries escapes but no text. It is not a row either.
+
+Colours arrive in the ITU-T T.416 **colon** form (`ESC[38:2::R:G:B`). Most ANSI parsers only handle the semicolon form; baleia.nvim, for instance, strips the sequence and renders no colour at all. The parser here handles both.
+
+### Colours
+
+`snatch.action { color = false }` falls back to plain text. Otherwise the reproduction picks up the terminal's palette:
+
+- `Normal` and `NormalFloat` come from WezTerm's `resolved_palette`, so default-coloured cells and the gaps between panes match the real background.
+- Selection is `reverse` and the cursor line is underlined, because Neovim's defaults for both are background-only and disappear under coloured cells.
+- While jab.nvim is searching, colour flattens to the pane background. jab dims the screen with a single foreground-only `Comment` highlight, which would otherwise leave the backgrounds at full strength with grey text on top. Giving `Comment` a background turns it into a real backdrop; colour returns on the jump.
 
 ## Fidelity Testing
 
@@ -96,10 +112,19 @@ macOS only. It uses `screencapture(1)`, so the first run asks for Screen Recordi
 
 Note that the reproduction runs in a **new tab**, so if you hide the tab bar for single-tab windows the two shots will be one row out of step. That is the harness, not the capture.
 
+## Development
+
+`nvim/` is deployed into `$XDG_CONFIG_HOME/<nvim_appname>/` on config load. Only a change to the `-- spec-version:` line in `nvim/init.lua` asks the next launch to run `Lazy! sync`, so editing the parser does not cost a network round trip before the capture appears. Bump it when the lazy.nvim specs change.
+
+Run the parser tests with:
+
+```console
+$ nvim -l tests/ansi_spec.lua
+```
+
 ## Known Limitations
 
 - **Wrapped lines yank as separate lines**: the capture is physical (already wrapped) rows, so a long line that WezTerm wrapped across two rows is two lines in the buffer. This is what makes the screen reproduction exact; the cost is that yanking such a line gives you the break too.
-- **Colors are discarded**: `get_lines_as_escapes()` returns styling, but the escapes are stripped before the text reaches Neovim.
 
 ## License
 
